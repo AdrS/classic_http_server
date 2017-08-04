@@ -1,6 +1,8 @@
 #include "http.h"
+#include "constants.h"
 #include <assert.h>
 #include <errno.h>
+#include <string.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -8,7 +10,11 @@
 #include <stdio.h>
 
 #define BUF_SIZE 1024
-#define MAX_LINE 1024
+#define MAX_URL 1024
+
+#define HTTP1_1     1
+#define KEEP_ALIVE  2
+#define ACCEPT_GZIP 4
 
 typedef struct {
 	//read and write buffers
@@ -18,9 +24,17 @@ typedef struct {
 	//char send_buf[BUF_SIZE];
 	//size_t sleft;
 	//char *spos;
-
 	int fd;
+
 } http_connection_t;
+
+typedef struct {
+	http_method_t method;
+	char request_line[BUF_SIZE];
+	char *url;
+	int status;
+	int options;
+} http_request_t;
 
 static void init_connection(http_connection_t *con, int fd) {
 	con->rsize = 0;
@@ -29,7 +43,7 @@ static void init_connection(http_connection_t *con, int fd) {
 }
 
 //check that http_connection_t is not null and properly formed
-static void assert_connection_invariants_hold(http_connection_t *con) {
+static void assert_connection_invariants_hold(const http_connection_t *con) {
 	assert(con);
 	assert(con->rpos);
 	assert(con->rpos >= con->recv_buf);
@@ -38,6 +52,14 @@ static void assert_connection_invariants_hold(http_connection_t *con) {
 	assert(con->fd >= 0);
 }
 
+static void print_request(const http_request_t *request) {
+	const char *methods[] = {"GET", "POST", "HEAD"};
+
+	printf("Method: %s\n", methods[(int)request->method]);
+	printf("Url: %s\n", request->url);
+	printf("Version: HTTP/1.%c\n", request->options & HTTP1_1 ? '1' : '0');
+	printf("Keep Alive: %s\n", request->options & KEEP_ALIVE ? "true" : "false");
+}
 //sends full contents of buffer returns -1 on failure 0 on success
 static int send_all(int fd, const char *buf, size_t len) {
 	assert(buf);
@@ -103,46 +125,204 @@ static ssize_t recv_line(http_connection_t *con, char *buf, size_t max_len) {
 	return len;
 }
 
-//read line terminated with CRLF or LF
-//void read_line(int con);
+//replaces trailing newline (CRLF or LF) with null terminator
+static void remove_endline(char *line, size_t len) {
+	//there should actually be a endline
+	assert(line[len] == '\0' && line[len - 1] == '\n');
+	if(len > 1 && line[len - 2] == '\r') {
+		//CRLF
+		line[len - 2] = '\0';
+	} else {
+		//LF
+		line[len - 1] = '\0';
+	}
+}
 
-//void parse_request_line(char *buf, size_t len);
+static const char *reason_phrase(int status) {
+	size_t es = sizeof(INFO[0]);
+	if(status < 100) return NULL;
+
+	size_t s = (size_t)status; //to suppress signed unsigned comparison warnings
+
+	//if in lookup table => return it
+	//otherwise default to x00 reason phrase
+
+	//1xx: Informational
+	if(s < 100 + sizeof(INFO)/es) return INFO[s - 100];
+	if(s < 200) return INFO[0];
+	//2xx: Success
+	if(s < 200 + sizeof(SUCCESS)/es) return SUCCESS[s - 200];
+	if(s < 300) return SUCCESS[0];
+	//3xx: Redirection
+	if(s < 300 + sizeof(REDIRECTION)/es) return REDIRECTION[s - 300];
+	if(s < 400) return REDIRECTION[0];
+	//4xx: Client Error
+	if(s < 400 + sizeof(CLIENT_ERROR)/es) return CLIENT_ERROR[s - 400];
+	if(s < 500) return CLIENT_ERROR[0];
+	//5xx: Server Error
+	if(s < 500 + sizeof(SERVER_ERROR)/es) return SERVER_ERROR[s - 500];
+	if(s < 600) return SERVER_ERROR[0];
+
+	return NULL;
+}
 
 //if reason phrase is null, a generic one is used instead
-/*
-static void send_reply_line(http_connection_t *con, int status_code,
-				const char *reason_phrase) {
+//replies with error
+static void reply_with_error(http_connection_t *con, int status_code) {
+	char *buf = con->recv_buf;
+	int r;
+	r = snprintf(buf, BUF_SIZE - 1, "HTTP/1.1 %d %s\r\n\r\n",
+		status_code, reason_phrase(status_code));
+	if(r > 0) {
+		send_all(con->fd, buf, r);
+	}
 }
+
+/*
 
 static void send_headers(http_connection_t *con) {
 }
 
 static void send_body(http_connection_t *con) {
 }
-static int recv_request_line(http_connection_t *con) {
+*/
+
+//determine method + start of url
+static void parse_method(http_request_t *request) {
+	char *request_line = request->request_line;
+	switch(request_line[0]) {
+		case 'G':
+			if(strncmp("ET ", request_line + 1, 3) == 0) {
+				request->url = request_line + 4;
+				request->method = GET;
+				return;
+			}
+		break;
+		case 'P':
+			if(strncmp("OST ", request_line + 1, 4) == 0) {
+				request->url = request_line + 5;
+				request->method = POST;
+				return;
+			}
+		break;
+		case 'H':
+			if(strncmp("EAD ", request_line + 1, 4) == 0) {
+				request->url = request_line + 5;
+				request->method = HEAD;
+				return;
+			}
+		break;
+	}
+	request->method = UNKNOWN;
+}
+
+//returns index of first occurance of c or -1 or c is not in string
+static int find_first(const char *line, char c) {
+	int i;
+	for(i = 0; line[i]; ++i) {
+		if(line[i] == c) {
+			return i;
+		}
+	}
 	return -1;
 }
-*/
+
+//reads http request line
+//request line = method SP request-target SP HTTP-version CRLF
+//return -1 or io error -2 on errors that warrent a responce
+static int read_request_line(http_connection_t *con, http_request_t *request) {
+	ssize_t r;
+	char *version_str;
+
+	//read line
+	r = recv_line(con, request->request_line, BUF_SIZE);
+	//io error or eof
+	if(r == -1 || r == 0) return -1;
+
+	//request line too long
+	if(r == -2) {
+		//request line too long (technically 416 is URL too long)
+		fprintf(stderr, "request line too long\n");
+		request->status = 416;
+		return -2;
+	}
+	remove_endline(request->request_line, r);
+	printf("%s\n", request->request_line);
+
+	//determine method + start of url
+	parse_method(request);
+	if(request->method == UNKNOWN) {
+		//not implemented
+		fprintf(stderr, "not implemented\n");
+		request->status = 400;
+		return -2;
+	}
+
+	//parse url
+	r = find_first(request->url, ' ');
+	if(r <= 0) {
+		//empty url or no space endig url
+		fprintf(stderr, "bad url\n");
+		request->status = 400;
+		return -2;
+	}
+	request->url[r] = '\0';
+
+	//percent decode url
+	//TODO:
+	
+	//determine version
+	version_str = request->url + r + 1;
+	if(strncmp("HTTP/1.", version_str, 7)) {
+		fprintf(stderr, "bad version\n");
+		request->status = 400;
+		return -2;
+	}
+	switch(version_str[7]) {
+		case '0':
+			request->options = 0;
+		break;
+		case '1':
+			//HTTP/1.1 => keep alive by default
+			request->options = KEEP_ALIVE | HTTP1_1;
+		break;
+		default:
+			//HTTP version not supported
+			fprintf(stderr, "unsupported version");
+			request->status = 505;
+			return -2;
+	}
+	//check that there is nothing after http version
+	if(version_str[8] != '\0') {
+		fprintf(stderr, "unexpected trailing characters\n");
+		request->status = 400;
+		return -2;
+	}
+	return 0;
+}
 
 void handle_http_connection(int fd) {
 	http_connection_t con;
-	char line[MAX_LINE];
-	ssize_t r;
+	http_request_t request;
 	init_connection(&con, fd);
+	int r;
 
-	//TODO: put into "read request line" function
-	r = recv_line(&con, line, MAX_LINE);
-	if(r == -1) return;
+	do {
+		//read_request_line
+		r = read_request_line(&con, &request);
 
-	//line too long
-	if(r == -2) {
-		send_all(fd, "HTTP/1.1 400 Request Line Too Long\r\nConnection: close\r\n\r\n", 57);
-		return;
-	}
-	printf("Request line: %s", line);
+		//io error
+		if(r == -1) break;
 
-	send_all(fd, "HTTP/1.1 501 Not Implemented\r\nConnection: close\r\n\r\n", 51);
+		//client error or unsupported method
+		if(r < 0) {
+			reply_with_error(&con, request.status);
+			break;
+		}
+		print_request(&request);
 
-	//read request line
-	//read headers
+		//read headers
+
+		//read body (if any)
+	} while(request.options & KEEP_ALIVE);
 }

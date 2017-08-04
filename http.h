@@ -10,7 +10,7 @@
 //Content-Encoding: ...
 
 //support for GET and HEAD is required by standard
-typedef enum { GET, POST, HEAD } http_method_t;
+typedef enum { GET, POST, HEAD, UNKNOWN } http_method_t;
 
 //typedef struct {
 //	const char *key;
