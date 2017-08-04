@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 //connection handlers are passed the file descriptor of the client connection
+//WARNING: handler should not close connection itself
 typedef void (connection_handler_t)(int client_fd);
 
 //TODO: add more handlers for server

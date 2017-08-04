@@ -32,6 +32,7 @@ typedef struct {
 static void *start_handler(void *arg) {
 	start_handler_args *args = (start_handler_args*)arg;
 	args->handler(args->client_fd);
+	close(args->client_fd);
 	return NULL;
 }
 
