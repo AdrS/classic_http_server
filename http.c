@@ -28,6 +28,8 @@ typedef struct {
 
 } http_connection_t;
 
+//TODO: write structs for each "important" request header
+
 typedef struct {
 	http_method_t method;
 	char request_line[BUF_SIZE];
@@ -40,6 +42,13 @@ static void init_connection(http_connection_t *con, int fd) {
 	con->rsize = 0;
 	con->rpos = con->recv_buf;
 	con->fd = fd;
+}
+
+static void init_request(http_request_t *request) {
+	request->method = UNKNOWN;
+	request->url = NULL;
+	request->status = 0;
+	request->options = 0;
 }
 
 //check that http_connection_t is not null and properly formed
@@ -138,6 +147,18 @@ static void remove_endline(char *line, size_t len) {
 	}
 }
 
+static int is_trailing_space(char c) {
+	return c == '\n' || c == '\r' || c == ' ' || c == '\t' || c == '\0';
+}
+
+//remove trailing whitespace (ie: ' ' \t \r \n)
+static void remove_trailing_whitespace(char *line, size_t len) {
+	int i = ((int)len) - 1;
+	while(i >= 0 && is_trailing_space(line[i])) {
+		line[i--] = '\0';
+	}
+}
+
 static const char *reason_phrase(int status) {
 	size_t es = sizeof(INFO[0]);
 	if(status < 100) return NULL;
@@ -177,15 +198,6 @@ static void reply_with_error(http_connection_t *con, int status_code) {
 		send_all(con->fd, buf, r);
 	}
 }
-
-/*
-
-static void send_headers(http_connection_t *con) {
-}
-
-static void send_body(http_connection_t *con) {
-}
-*/
 
 //determine method + start of url
 static void parse_method(http_request_t *request) {
@@ -236,14 +248,14 @@ static int read_request_line(http_connection_t *con, http_request_t *request) {
 
 	//read line
 	r = recv_line(con, request->request_line, BUF_SIZE);
-	//io error or eof
-	if(r == -1 || r == 0) return -1;
+	//io error, eof, does not end with newline
+	if(r == -1 || r == 0 || request->request_line[r - 1] != '\n') return -1;
 
 	//request line too long
 	if(r == -2) {
 		//request line too long (technically 416 is URL too long)
 		fprintf(stderr, "request line too long\n");
-		request->status = 416;
+		request->status = 413; //TODO: #define PAYLOAD_TO_LARGE 413
 		return -2;
 	}
 	remove_endline(request->request_line, r);
@@ -301,10 +313,105 @@ static int read_request_line(http_connection_t *con, http_request_t *request) {
 	return 0;
 }
 
+static int handle_header(http_request_t *request, const char *name, char *value) {
+	//Accept-Encoding - what compression algorithms client supports
+	//Connection
+	//Content-Encoding - what algorithm the message body is compressed with
+	//Content-Length
+	//Range - part of document client wants
+	//Transfer-Encoding
+	//
+	//TODO: normcase headers
+	//check for Connection and Keep-Alive
+	//connection: close  -> close
+	//connection: keep-alive  -> keep-alive
+	//HTTP/1.1 no connection header -> keep alive
+	//HTTP/1.0 no connection header -> close
+
+	//determine header type
+	switch(name[0]) {
+		case 'C':
+		case 'c':
+			//handler Connection
+			if(!strcasecmp(name + 1, "onnection")) {
+				if(!strcasecmp(value, "keep-alive")) {
+					request->options |= KEEP_ALIVE;
+				} else {
+					request->options &= (~KEEP_ALIVE);
+				}
+			} else if(!strcasecmp(name + 10, "ontent-length")) {
+			} else if(!strcasecmp(name + 10, "ontent-encoding")) {
+			}
+		break;
+	}
+	return 0;
+}
+
+//reads headers and records important values
+//return -1 on read error, -2 on other errors
+static int read_headers(http_connection_t *con, http_request_t *request) {
+	//while True
+	//	read line
+	//	eof or empty line -> end of headers
+	//	parse header
+	//	if it's something we care about take note of value
+	ssize_t r;
+	char buf[BUF_SIZE];
+	char *name;
+	char *value;
+	for(;;) {
+		//read line
+		r = recv_line(con, buf, BUF_SIZE);
+
+		//io error
+		if(r == -1) return -1;
+
+		//line too long
+		if(r == -2) {
+			request->status = 413;
+			return -2;
+		}
+		//TODO: check for eof
+		remove_trailing_whitespace(buf, r);
+
+		//empty line => end of headers
+		if(strcmp(buf, "") == 0) {
+			break;
+		}
+
+		//parse header
+		//header-field   = field-name ":" OWS field-value OWS
+		name = buf;
+
+		//find end of key
+		r = find_first(name, ':');
+
+		//malformed header
+		if(r < 1) {
+			request->status = 400;
+			return -2;
+		}
+
+		name[r] = '\0';
+
+		value = name + r + 1;
+		//skip leading whitespace (trailing whitespace already removed)
+		while(*value == ' ' || *value == '\t') ++value;
+
+		fprintf(stderr, "Name: \"%s\", Value: \"%s\"\n", name, value);
+
+		//TODO: check for errors
+		handle_header(request, name, value);
+	}
+
+	return 0;
+}
+
 void handle_http_connection(int fd) {
 	http_connection_t con;
 	http_request_t request;
 	init_connection(&con, fd);
+	init_request(&request);
 	int r;
 
 	do {
@@ -319,9 +426,14 @@ void handle_http_connection(int fd) {
 			reply_with_error(&con, request.status);
 			break;
 		}
-		print_request(&request);
 
 		//read headers
+		if(read_headers(&con, &request) < 0) {
+			reply_with_error(&con, request.status);
+			break;
+		}
+
+		print_request(&request);
 
 		//read body (if any)
 	} while(request.options & KEEP_ALIVE);
