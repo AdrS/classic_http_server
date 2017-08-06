@@ -1,6 +1,9 @@
 #include "http.h"
 #include "constants.h"
+#include "encoding_prefs.h"
+#include "util.h"
 #include <assert.h>
+#include <ctype.h>
 #include <errno.h>
 #include <string.h>
 #include <sys/types.h>
@@ -14,7 +17,6 @@
 
 #define HTTP1_1     1
 #define KEEP_ALIVE  2
-#define ACCEPT_GZIP 4
 
 typedef struct {
 	//read and write buffers
@@ -34,8 +36,12 @@ typedef struct {
 	http_method_t method;
 	char request_line[BUF_SIZE];
 	char *url;
+	//status, content_length are -1 if not set
 	int status;
+	int content_length;
 	int options;
+	//client encoding preferences
+	encoding_prefs_t encoding_prefs;
 } http_request_t;
 
 static void init_connection(http_connection_t *con, int fd) {
@@ -47,8 +53,10 @@ static void init_connection(http_connection_t *con, int fd) {
 static void init_request(http_request_t *request) {
 	request->method = UNKNOWN;
 	request->url = NULL;
-	request->status = 0;
+	request->status = -1;
 	request->options = 0;
+	request->content_length = -1;
+	init_encoding_prefs(&request->encoding_prefs);
 }
 
 //check that http_connection_t is not null and properly formed
@@ -59,6 +67,10 @@ static void assert_connection_invariants_hold(const http_connection_t *con) {
 	assert(con->rpos < con->recv_buf + BUF_SIZE);
 	assert(con->rsize <= con->recv_buf + BUF_SIZE - con->rpos);
 	assert(con->fd >= 0);
+	//get around unused parameter warning
+	if(!con) {
+		assert(0);
+	}
 }
 
 static void print_request(const http_request_t *request) {
@@ -68,6 +80,7 @@ static void print_request(const http_request_t *request) {
 	printf("Url: %s\n", request->url);
 	printf("Version: HTTP/1.%c\n", request->options & HTTP1_1 ? '1' : '0');
 	printf("Keep Alive: %s\n", request->options & KEEP_ALIVE ? "true" : "false");
+	printf("Content-Length: %d\n", request->content_length);
 }
 //sends full contents of buffer returns -1 on failure 0 on success
 static int send_all(int fd, const char *buf, size_t len) {
@@ -79,7 +92,7 @@ static int send_all(int fd, const char *buf, size_t len) {
 			return -1;
 		}
 		buf += r;
-		len -= r;
+		len -= (size_t)r;
 	}
 	return 0;
 }
@@ -131,32 +144,7 @@ static ssize_t recv_line(http_connection_t *con, char *buf, size_t max_len) {
 		return -2;
 	}
 	buf[len] = '\0';
-	return len;
-}
-
-//replaces trailing newline (CRLF or LF) with null terminator
-static void remove_endline(char *line, size_t len) {
-	//there should actually be a endline
-	assert(line[len] == '\0' && line[len - 1] == '\n');
-	if(len > 1 && line[len - 2] == '\r') {
-		//CRLF
-		line[len - 2] = '\0';
-	} else {
-		//LF
-		line[len - 1] = '\0';
-	}
-}
-
-static int is_trailing_space(char c) {
-	return c == '\n' || c == '\r' || c == ' ' || c == '\t' || c == '\0';
-}
-
-//remove trailing whitespace (ie: ' ' \t \r \n)
-static void remove_trailing_whitespace(char *line, size_t len) {
-	int i = ((int)len) - 1;
-	while(i >= 0 && is_trailing_space(line[i])) {
-		line[i--] = '\0';
-	}
+	return (ssize_t)len;
 }
 
 static const char *reason_phrase(int status) {
@@ -195,7 +183,7 @@ static void reply_with_error(http_connection_t *con, int status_code) {
 	r = snprintf(buf, BUF_SIZE - 1, "HTTP/1.1 %d %s\r\n\r\n",
 		status_code, reason_phrase(status_code));
 	if(r > 0) {
-		send_all(con->fd, buf, r);
+		send_all(con->fd, buf, (size_t)r);
 	}
 }
 
@@ -228,16 +216,6 @@ static void parse_method(http_request_t *request) {
 	request->method = UNKNOWN;
 }
 
-//returns index of first occurance of c or -1 or c is not in string
-static int find_first(const char *line, char c) {
-	int i;
-	for(i = 0; line[i]; ++i) {
-		if(line[i] == c) {
-			return i;
-		}
-	}
-	return -1;
-}
 
 //reads http request line
 //request line = method SP request-target SP HTTP-version CRLF
@@ -258,7 +236,7 @@ static int read_request_line(http_connection_t *con, http_request_t *request) {
 		request->status = 413; //TODO: #define PAYLOAD_TO_LARGE 413
 		return -2;
 	}
-	remove_endline(request->request_line, r);
+	remove_endline(request->request_line, (size_t)r);
 	printf("%s\n", request->request_line);
 
 	//determine method + start of url
@@ -327,20 +305,58 @@ static int handle_header(http_request_t *request, const char *name, char *value)
 	//connection: keep-alive  -> keep-alive
 	//HTTP/1.1 no connection header -> keep alive
 	//HTTP/1.0 no connection header -> close
+	//
+	//TODO: content-length not allowed if transfer encoding is set
+
+	//TODO: write seperate functions for parsing each header type
 
 	//determine header type
 	switch(name[0]) {
+		case 'A':
+		case 'a':
+			if(!strcasecmp(name + 1, "ccept-encoding")) {
+				//handle Accept-Encoding
+				//comma seperated list
+				//look for gzip, identity
+				//TODO: parse this + gzip;q=0.8
+			}
+		break;
 		case 'C':
 		case 'c':
-			//handler Connection
 			if(!strcasecmp(name + 1, "onnection")) {
+				//handle Connection:
 				if(!strcasecmp(value, "keep-alive")) {
 					request->options |= KEEP_ALIVE;
 				} else {
 					request->options &= (~KEEP_ALIVE);
+					//TODO: should I return error if value is not close?
 				}
-			} else if(!strcasecmp(name + 10, "ontent-length")) {
-			} else if(!strcasecmp(name + 10, "ontent-encoding")) {
+			} else if(!strcasecmp(name + 1, "ontent-length")) {
+				puts("content length");
+				//handle Content-Length:
+				request->content_length = parse_uint(value);
+				if(request->content_length < 0) {
+					request->status = 400;
+					return -1;
+				}
+			} else if(!strcasecmp(name + 1, "ontent-encoding")) {
+				//TODO: check for gzip
+			}
+		break;
+		case 'R':
+		case 'r':
+			if(!strcasecmp(name + 1, "ange")) {
+				//handle Range:
+			}
+		break;
+		case 'T':
+		case 't':
+			if(!strcasecmp(name + 1, "ransfer-encoding")) {
+				//unrecognized transfer encoding => 501 (not implemented)
+				//parse list of encodings
+				//TODO: handle chuncked
+				//
+				//chuncked, gzip, identity
 			}
 		break;
 	}
@@ -372,7 +388,7 @@ static int read_headers(http_connection_t *con, http_request_t *request) {
 			return -2;
 		}
 		//TODO: check for eof
-		remove_trailing_whitespace(buf, r);
+		remove_trailing_whitespace(buf, (size_t)r);
 
 		//empty line => end of headers
 		if(strcmp(buf, "") == 0) {
@@ -394,14 +410,15 @@ static int read_headers(http_connection_t *con, http_request_t *request) {
 
 		name[r] = '\0';
 
-		value = name + r + 1;
 		//skip leading whitespace (trailing whitespace already removed)
+		value = name + r + 1;
 		while(*value == ' ' || *value == '\t') ++value;
 
 		fprintf(stderr, "Name: \"%s\", Value: \"%s\"\n", name, value);
 
-		//TODO: check for errors
-		handle_header(request, name, value);
+		if(handle_header(request, name, value)  < 0) {
+			return -1;
+		}
 	}
 
 	return 0;
@@ -427,7 +444,6 @@ void handle_http_connection(int fd) {
 			break;
 		}
 
-		//read headers
 		if(read_headers(&con, &request) < 0) {
 			reply_with_error(&con, request.status);
 			break;
@@ -436,5 +452,6 @@ void handle_http_connection(int fd) {
 		print_request(&request);
 
 		//read body (if any)
+		//TODO: should I block bodies for get requests???
 	} while(request.options & KEEP_ALIVE);
 }
