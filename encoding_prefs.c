@@ -1,4 +1,5 @@
 #include "encoding_prefs.h"
+#include "util.h"
 #include <assert.h>
 #include <ctype.h>
 #include <string.h>
@@ -75,38 +76,70 @@ int parse_qvalue(const char *qstr) {
 	return -1;
 }
 
-//weight = OWS ";" OWS "q=" qvalue
+//takes pointer to the ";" part of a weight string and returns
+//1000*qvalue or -1 if string is invalid
+int parse_weight(const char *wstr) {
+	assert(wstr);
+	assert(wstr[0] == ';');
+	++wstr;
+	//skip leading whitespace
+	while(*wstr == ' ' || *wstr == '\t') ++wstr;
+
+	//check for "q="
+	if(wstr[0] != 'q' || wstr[1] != '=') return -1;
+
+	//get qvalue
+	return parse_qvalue(wstr + 2);
+}
+
+static int handle_coding_entry(char *entry, void *arg) {
+	assert(entry);
+	assert(arg);
+	int i, weight;
+	encoding_prefs_t *prefs = (encoding_prefs_t*)arg;
+
+	//check for weight
+	i = find_first(entry, ';');
+
+	//determine encoding weigth
+	if(i != -1) {
+		weight = parse_weight(entry + i);
+
+		//invalid weigth
+		if(weight < 0) return -1;
+
+		//remove whitespace between coding and weight
+		entry[i] = '\0';
+		remove_trailing_whitespace(entry, (size_t)i);
+	} else {
+		//default is 1
+		weight = 1000;
+	}
+
+	//check for known codings
+	if(!strcmp(entry, "gzip")) {
+		prefs->gzip = weight;
+	} else if(!strcmp(entry, "identity")) {
+		prefs->identity = weight;
+	} else if(!strcmp(entry, "*")) {
+		prefs->catch_all = weight;
+	}
+	return 0;
+}
+
+//weight = OWS ";" OWS "q=" qvalue (default weigth is 1)
+//Accept-Encoding  = #( codings [ weight ] )
 //Accept-Encoding = [ ( "," / ( codings [ weight ] ) ) *( OWS "," [ OWS
 //    ( codings [ weight ] ) ] ) ]
+//codings = content-coding / "identity" / "*"
+//content-coding = token
 int parse_accepted_encodings(encoding_prefs_t *result, char *header_str) {
 	assert(result);
 	assert(header_str);
-	if(!strcmp(header_str, "gzip")) {
-		result->gzip = 1;
-	}
-	return -1;
-	//TODO: write makefile
-	//write parse qvalue tests, write parse qvalue, write parse_accepted_encodings tests
-	//write parse_accepted_encodings
-	//
-	//write parse percent encoding + tests
 
-	//write transfer encoding header parsing + tests
-	//write chunked encoding parsing
-	//write read body
-	//int read_body(http_connection_t *con, http_request_t *request,
-	//			int (*data_handler)(char *data, size_t len))
-	
-	//write is path safe + tests
-	//write file reading
-	//write send headers
-	//write send body
-	//write 
-	//int send_chunked(http_connection_t *con,
-	//			int (*next_chunk)(http_request_t *request))
-	//write handle get
-	//write handle post
-	//write gzip
-	//write range requests
-	//caching
+	//initialize result
+	init_encoding_prefs(result);
+
+	//parse each entry in comman seperated list
+	return parse_list(header_str, handle_coding_entry, (void*)result);
 }

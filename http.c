@@ -56,6 +56,8 @@ static void init_request(http_request_t *request) {
 	request->status = -1;
 	request->options = 0;
 	request->content_length = -1;
+	//Note: google does not remember accepted encodings across requests
+	//probably safe to do so
 	init_encoding_prefs(&request->encoding_prefs);
 }
 
@@ -81,6 +83,10 @@ static void print_request(const http_request_t *request) {
 	printf("Version: HTTP/1.%c\n", request->options & HTTP1_1 ? '1' : '0');
 	printf("Keep Alive: %s\n", request->options & KEEP_ALIVE ? "true" : "false");
 	printf("Content-Length: %d\n", request->content_length);
+	printf("Accept-Encoding: gzip: %d, identity: %d, *: %d\n",
+		request->encoding_prefs.gzip,
+		request->encoding_prefs.identity,
+		request->encoding_prefs.catch_all);
 }
 //sends full contents of buffer returns -1 on failure 0 on success
 static int send_all(int fd, const char *buf, size_t len) {
@@ -299,16 +305,7 @@ static int handle_header(http_request_t *request, const char *name, char *value)
 	//Range - part of document client wants
 	//Transfer-Encoding
 	//
-	//TODO: normcase headers
-	//check for Connection and Keep-Alive
-	//connection: close  -> close
-	//connection: keep-alive  -> keep-alive
-	//HTTP/1.1 no connection header -> keep alive
-	//HTTP/1.0 no connection header -> close
-	//
 	//TODO: content-length not allowed if transfer encoding is set
-
-	//TODO: write seperate functions for parsing each header type
 
 	//determine header type
 	switch(name[0]) {
@@ -316,9 +313,11 @@ static int handle_header(http_request_t *request, const char *name, char *value)
 		case 'a':
 			if(!strcasecmp(name + 1, "ccept-encoding")) {
 				//handle Accept-Encoding
-				//comma seperated list
-				//look for gzip, identity
-				//TODO: parse this + gzip;q=0.8
+				if(parse_accepted_encodings(&(request->encoding_prefs),
+						value) == -1) {
+					request->status = 400;
+					return -1;
+				}
 			}
 		break;
 		case 'C':
@@ -428,10 +427,11 @@ void handle_http_connection(int fd) {
 	http_connection_t con;
 	http_request_t request;
 	init_connection(&con, fd);
-	init_request(&request);
 	int r;
 
 	do {
+		init_request(&request);
+
 		//read_request_line
 		r = read_request_line(&con, &request);
 

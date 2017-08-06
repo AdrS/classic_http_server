@@ -71,8 +71,8 @@ clean:
 	rm -f $(OBJECTS) $(EXECUTABLE) $(TESTS)
 
 runtests: alltests
-	./test_encoding_prefs
 	./test_util
+	./test_encoding_prefs
 
 #######################
 # individual dependencies for objects

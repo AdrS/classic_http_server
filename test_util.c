@@ -113,9 +113,22 @@ void test_parse_list() {
 	assert(!strcmp(rec.elts[0], "compress"));
 	assert(!strcmp(rec.elts[1], "gzip"));
 
-	//test empty element "a, , c"
+	//test empty element (just whitespace) "a, , c"
 	init_record_elts(&rec);
 	strncpy(buf, "a, , c", 20);
+	assert(parse_list(buf, empty_handler, (void*)&rec) == -1);
+
+	//test empty element "a,, c"
+	init_record_elts(&rec);
+	strncpy(buf, "a,, c", 20);
+	assert(parse_list(buf, empty_handler, (void*)&rec) == -1);
+
+	init_record_elts(&rec);
+	strncpy(buf, ",", 20);
+	assert(parse_list(buf, empty_handler, (void*)&rec) == -1);
+
+	init_record_elts(&rec);
+	strncpy(buf, " , ", 20);
 	assert(parse_list(buf, empty_handler, (void*)&rec) == -1);
 
 	//test trailing "a, b, "

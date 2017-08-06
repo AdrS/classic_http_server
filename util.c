@@ -86,7 +86,7 @@ int parse_list(char *list, int (*handle_elt)(char *elt, void *args), void *args)
 		len = find_first(cur, ',');
 
 		//null terminate element and save location of next
-		if(len > 0) {
+		if(len >= 0) {
 			cur[len] = '\0';
 			next = cur + len + 1;
 		}
