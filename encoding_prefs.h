@@ -16,4 +16,6 @@ void init_encoding_prefs(encoding_prefs_t *ep);
 //returns -1 if malformed
 int parse_accepted_encodings(encoding_prefs_t *result, char *header_str);
 
+int parse_qvalue(const char *qstr);
+
 #endif

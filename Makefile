@@ -13,7 +13,7 @@ SOURCES     := $(filter-out $(TESTSOURCES), $(SOURCES))
 OBJECTS		= $(SOURCES:%.c=%.o)
 
 # If main() is in another file delete the line above, edit and uncomment below
-PROJECTFILE = main.c
+PROJECTFILE = http_server.c
 
 #Default Flags
 CCFLAGS = -Wconversion -Wall -Werror -Wextra
@@ -50,7 +50,8 @@ define make_tests
 	    @echo Edit PROJECTFILE variable to .c file with main\(\)
 	    @exit 1
     endif
-    SRCS = $$(filter-out $$(PROJECTFILE), $$(SOURCES))
+    TMP = $$(filter-out $$(PROJECTFILE), $$(SOURCES))
+    SRCS = $$(filter-out threaded_server.c, $$(TMP))
     OBJS = $$(SRCS:%.c=%.o)
     HDRS = $$(wildcard *.h)
     $(1): CCFLAGS += -g3 -DDEBUG
