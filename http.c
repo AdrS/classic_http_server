@@ -244,7 +244,7 @@ static int read_request_line(http_connection_t *con, http_request_t *request) {
 	if(request->method == UNKNOWN) {
 		//not implemented
 		fprintf(stderr, "not implemented\n");
-		request->status = 400;
+		request->status = 501;
 		return -2;
 	}
 
@@ -453,5 +453,6 @@ void handle_http_connection(int fd) {
 
 		//read body (if any)
 		//TODO: should I block bodies for get requests???
+		//TODO: which settings (ex: Accept-Encodings) are reset between requests??
 	} while(request.options & KEEP_ALIVE);
 }

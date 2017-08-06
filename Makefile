@@ -72,6 +72,7 @@ clean:
 
 runtests: alltests
 	./test_encoding_prefs
+	./test_util
 
 #######################
 # individual dependencies for objects
@@ -81,6 +82,7 @@ http_server.o: http_server.c http.h threaded_server.h
 http.o: http.c http.h util.h encoding_prefs.h
 
 test_encoding_prefs.o: test_encoding_prefs.c encoding_prefs.h
+test_util.o: test_util.c util.h
 
 ######################
 
