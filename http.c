@@ -1,6 +1,7 @@
 #include "http.h"
 #include "constants.h"
 #include "encoding_prefs.h"
+#include "url.h"
 #include "util.h"
 #include <assert.h>
 #include <ctype.h>
@@ -12,8 +13,7 @@
 
 #include <stdio.h>
 
-#define BUF_SIZE 1024
-#define MAX_URL 1024
+#define BUF_SIZE 8192
 
 #define HTTP1_1     1
 #define KEEP_ALIVE  2
@@ -30,12 +30,12 @@ typedef struct {
 
 } http_connection_t;
 
-//TODO: write structs for each "important" request header
-
 typedef struct {
 	http_method_t method;
 	char request_line[BUF_SIZE];
 	char *url;
+	//length needed for when url has non trailing null bytes
+	int url_length;
 	//status, content_length are -1 if not set
 	int status;
 	int content_length;
@@ -53,6 +53,7 @@ static void init_connection(http_connection_t *con, int fd) {
 static void init_request(http_request_t *request) {
 	request->method = UNKNOWN;
 	request->url = NULL;
+	request->url_length = -1;
 	request->status = -1;
 	request->options = 0;
 	request->content_length = -1;
@@ -80,6 +81,7 @@ static void print_request(const http_request_t *request) {
 
 	printf("Method: %s\n", methods[(int)request->method]);
 	printf("Url: %s\n", request->url);
+	printf("Url lenght: %d\n", request->url_length);
 	printf("Version: HTTP/1.%c\n", request->options & HTTP1_1 ? '1' : '0');
 	printf("Keep Alive: %s\n", request->options & KEEP_ALIVE ? "true" : "false");
 	printf("Content-Length: %d\n", request->content_length);
@@ -249,7 +251,6 @@ static int read_request_line(http_connection_t *con, http_request_t *request) {
 	parse_method(request);
 	if(request->method == UNKNOWN) {
 		//not implemented
-		fprintf(stderr, "not implemented\n");
 		request->status = 501;
 		return -2;
 	}
@@ -258,19 +259,21 @@ static int read_request_line(http_connection_t *con, http_request_t *request) {
 	r = find_first(request->url, ' ');
 	if(r <= 0) {
 		//empty url or no space endig url
-		fprintf(stderr, "bad url\n");
 		request->status = 400;
 		return -2;
 	}
 	request->url[r] = '\0';
 
 	//percent decode url
-	//TODO:
+	if(percent_decode(request->url, &(request->url_length)) == -1) {
+		//invalid percent encoding (what error code is this???)
+		request->status = 404;
+		return -2;
+	}
 	
 	//determine version
 	version_str = request->url + r + 1;
 	if(strncmp("HTTP/1.", version_str, 7)) {
-		fprintf(stderr, "bad version\n");
 		request->status = 400;
 		return -2;
 	}
@@ -284,13 +287,12 @@ static int read_request_line(http_connection_t *con, http_request_t *request) {
 		break;
 		default:
 			//HTTP version not supported
-			fprintf(stderr, "unsupported version");
 			request->status = 505;
 			return -2;
 	}
 	//check that there is nothing after http version
 	if(version_str[8] != '\0') {
-		fprintf(stderr, "unexpected trailing characters\n");
+		//unexpected trailing characters
 		request->status = 400;
 		return -2;
 	}
@@ -452,7 +454,7 @@ void handle_http_connection(int fd) {
 		print_request(&request);
 
 		//read body (if any)
-		//TODO: should I block bodies for get requests???
+		//TODO: should I block bodies for GET requests???
 		//TODO: which settings (ex: Accept-Encodings) are reset between requests??
 	} while(request.options & KEEP_ALIVE);
 }
