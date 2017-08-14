@@ -33,9 +33,12 @@ typedef struct {
 typedef struct {
 	http_method_t method;
 	char request_line[BUF_SIZE];
-	char *url;
-	//length needed for when url has non trailing null bytes
-	int url_length;
+	char *path;
+	//length needed for when URL has non trailing null bytes
+	int path_length;
+	char *query;
+	int query_length;
+
 	//status, content_length are -1 if not set
 	int status;
 	int content_length;
@@ -52,8 +55,10 @@ static void init_connection(http_connection_t *con, int fd) {
 
 static void init_request(http_request_t *request) {
 	request->method = UNKNOWN;
-	request->url = NULL;
-	request->url_length = -1;
+	request->path = NULL;
+	request->path_length = -1;
+	request->query = NULL;
+	request->query_length = -1;
 	request->status = -1;
 	request->options = 0;
 	request->content_length = -1;
@@ -80,8 +85,10 @@ static void print_request(const http_request_t *request) {
 	const char *methods[] = {"GET", "POST", "HEAD"};
 
 	printf("Method: %s\n", methods[(int)request->method]);
-	printf("Url: %s\n", request->url);
-	printf("Url lenght: %d\n", request->url_length);
+	printf("path: %s\n", request->path);
+	printf("path length: %d\n", request->path_length);
+	printf("query: %s\n", request->query);
+	printf("query length: %d\n", request->query_length);
 	printf("Version: HTTP/1.%c\n", request->options & HTTP1_1 ? '1' : '0');
 	printf("Keep Alive: %s\n", request->options & KEEP_ALIVE ? "true" : "false");
 	printf("Content-Length: %d\n", request->content_length);
@@ -195,27 +202,27 @@ static void reply_with_error(http_connection_t *con, int status_code) {
 	}
 }
 
-//determine method + start of url
+//determine method + start of URL
 static void parse_method(http_request_t *request) {
 	char *request_line = request->request_line;
 	switch(request_line[0]) {
 		case 'G':
 			if(strncmp("ET ", request_line + 1, 3) == 0) {
-				request->url = request_line + 4;
+				request->path = request_line + 4;
 				request->method = GET;
 				return;
 			}
 		break;
 		case 'P':
 			if(strncmp("OST ", request_line + 1, 4) == 0) {
-				request->url = request_line + 5;
+				request->path = request_line + 5;
 				request->method = POST;
 				return;
 			}
 		break;
 		case 'H':
 			if(strncmp("EAD ", request_line + 1, 4) == 0) {
-				request->url = request_line + 5;
+				request->path = request_line + 5;
 				request->method = HEAD;
 				return;
 			}
@@ -247,7 +254,7 @@ static int read_request_line(http_connection_t *con, http_request_t *request) {
 	remove_endline(request->request_line, (size_t)r);
 	printf("%s\n", request->request_line);
 
-	//determine method + start of url
+	//determine method + start of URL
 	parse_method(request);
 	if(request->method == UNKNOWN) {
 		//not implemented
@@ -255,24 +262,34 @@ static int read_request_line(http_connection_t *con, http_request_t *request) {
 		return -2;
 	}
 
-	//parse url
-	r = find_first(request->url, ' ');
+	//find end of URL
+	r = find_first(request->path, ' ');
 	if(r <= 0) {
-		//empty url or no space endig url
+		//empty URL or no space ending URL
+		puts("empty URL");
 		request->status = 400;
 		return -2;
 	}
-	request->url[r] = '\0';
+	request->path[r] = '\0';
+	version_str = request->path + r + 1;
 
-	//percent decode url
-	if(percent_decode(request->url, &(request->url_length)) == -1) {
+	//TODO: move URL parsing into a separate function
+	//must separate path and query parts before decoding
+	r = find_first(request->path, '?');
+	if(r >= 0) {
+		request->path[r] = '\0';
+		request->query = request->path + r + 1;
+	}
+
+	//percent decode path
+	if(percent_decode(request->path, &(request->path_length)) == -1) {
 		//invalid percent encoding (what error code is this???)
 		request->status = 404;
 		return -2;
 	}
+	//TODO: cannot percent decode query until after parameters have been parsed
 	
 	//determine version
-	version_str = request->url + r + 1;
 	if(strncmp("HTTP/1.", version_str, 7)) {
 		request->status = 400;
 		return -2;

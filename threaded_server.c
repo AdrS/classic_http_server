@@ -19,7 +19,7 @@ static void fatal_error(const char *msg) {
 static void set_address(struct sockaddr_in *addr, int port) {
 	bzero(addr, sizeof(*addr));
 	addr->sin_family = AF_INET;
-	addr->sin_port = htons(port);
+	addr->sin_port = htons((unsigned short)port);
 	addr->sin_addr.s_addr = INADDR_ANY; //TODO: make this configurable
 }
 

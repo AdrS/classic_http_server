@@ -26,7 +26,7 @@ release: all
 # make debug - will compile "all" with $(CCFLAGS) and the -g flag
 #              also defines DEBUG so that "#ifdef DEBUG /*...*/ #endif" works
 debug: CCFLAGS += -g3 -DDEBUG
-#debug: clean all
+debug: clean all
 
 # make profile - will compile "all" with $(CCFLAGS) and the -pg flag
 profile: CCFLAGS += -pg
