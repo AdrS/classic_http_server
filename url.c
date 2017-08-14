@@ -40,3 +40,29 @@ int percent_decode(char *str, int *len) {
 	*len = dpos - str;
 	return has_null;
 }
+
+int safe_path(const char *path) {
+	assert(path);
+	const char *pos = path;
+	if(*path == '/') {
+		return 0;
+	}
+
+	while(*pos) {
+		if(pos[0] == '.' && pos[1] == '.') {
+			//check for patterns:
+			//"<start of string>..\0" => path = ".."
+			//"<start of string>../" => path starts with "../"
+			//"/..\0"	=> path ends with "/.."
+			//"/../"	=> path contains
+			if((pos == path || *(pos - 1) == '/') &&
+				(pos[2] == '/' || pos[2] == '\0')) {
+				return 0;
+			}
+		} else if(pos[0] == '/' && pos[1] == '/') {
+			return 0;
+		}
+		++pos;
+	}
+	return 1;
+}

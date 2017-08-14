@@ -44,7 +44,29 @@ void test_percent_decode() {
 
 }
 
+void test_safe_path() {
+	assert(safe_path(""));
+	assert(safe_path("."));
+	assert(safe_path(".dog"));
+	assert(safe_path("./.dog"));
+	assert(safe_path("./././././././././.dog"));
+	assert(safe_path("hi/byte/.cars"));
+	assert(safe_path("carrot.."));
+	assert(safe_path("carrot../"));
+	assert(safe_path("carrot..taco"));
+	assert(safe_path("abc/.../cats"));
+
+	assert(!safe_path("/"));
+	assert(!safe_path(".."));
+	assert(!safe_path("../cats"));
+	assert(!safe_path("abc/../cats"));
+	assert(!safe_path("abc/.."));
+	assert(!safe_path("abc//"));
+	assert(!safe_path("abc//def"));
+}
+
 int main() {
+	test_safe_path();
 	test_percent_decode();
 	return 0;
 }
