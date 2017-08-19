@@ -1,6 +1,7 @@
 #include "http.h"
 #include "constants.h"
 #include "encoding_prefs.h"
+#include "files.h"
 #include "url.h"
 #include "util.h"
 #include <assert.h>
@@ -12,6 +13,10 @@
 #include <unistd.h>
 
 #include <stdio.h>
+
+#include <sys/sendfile.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
 #define BUF_SIZE 8192
 
@@ -195,8 +200,10 @@ static const char *reason_phrase(int status) {
 static void reply_with_error(http_connection_t *con, int status_code) {
 	char *buf = con->recv_buf;
 	int r;
-	r = snprintf(buf, BUF_SIZE - 1, "HTTP/1.1 %d %s\r\n\r\n",
-		status_code, reason_phrase(status_code));
+	assert(status_code >= 100 && status_code < 600);
+	r = snprintf(buf, BUF_SIZE - 1,
+		"HTTP/1.1 %d %s\r\nContent-Length: %d\r\n\r\n<html>error: %d</html>",
+		status_code, reason_phrase(status_code), 23, status_code);
 	if(r > 0) {
 		send_all(con->fd, buf, (size_t)r);
 	}
@@ -447,6 +454,7 @@ void handle_http_connection(int fd) {
 	http_request_t request;
 	init_connection(&con, fd);
 	int r;
+	int length;
 
 	do {
 		init_request(&request);
@@ -473,5 +481,50 @@ void handle_http_connection(int fd) {
 		//read body (if any)
 		//TODO: should I block bodies for GET requests???
 		//TODO: which settings (ex: Accept-Encodings) are reset between requests??
+
+		//TODO: put this elsewhere
+		if(request.path[0] == '/') {
+			++request.path;
+		}
+		fprintf(stderr, "GET path: %s\n", request.path);
+
+		if(!safe_path(request.path)) {
+			request.status = 404;
+			reply_with_error(&con, request.status);
+			goto request_end;
+		}
+
+		fd = web_open(request.path, &length);
+		if(fd == -1) {
+			request.status = 404;
+			reply_with_error(&con, request.status);
+			goto request_end;
+		}
+
+		//send headers
+		char *buf = con.recv_buf;
+		//TODO: set TCP_CORK option before sending header (to minimize number of packets send)
+		r = snprintf(buf, BUF_SIZE - 1, "HTTP/1.1 %d %s\r\nContent-Length: %lu\r\n\r\n",
+			200, reason_phrase(200), (unsigned long)length);
+		assert(r > 0);
+
+		if(send_all(con.fd, buf, (size_t)r) < 0) {
+			//could not send header :(
+			break;
+		}
+		//HEAD -> only send headers (no body)
+		if(request.method == HEAD) {
+			goto request_end;
+		}
+
+		//TODO: see limitations in man page (only transfers up to certain amount)
+		//TODO: fid must point to regular file (not symlink???)
+		//also look at splice(2)
+		if(sendfile(con.fd, fd, NULL, (size_t)length) != length) {
+			//did not send whole file :(
+			break;
+		}
+request_end:;
+		
 	} while(request.options & KEEP_ALIVE);
 }

@@ -37,7 +37,7 @@ int percent_decode(char *str, int *len) {
 		}
 	}
 	*dpos = '\0';
-	*len = dpos - str;
+	*len = (int)(dpos - str);
 	return has_null;
 }
 
