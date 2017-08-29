@@ -2,6 +2,7 @@
 #include "constants.h"
 #include "encoding_prefs.h"
 #include "files.h"
+#include "timestamp.h"
 #include "url.h"
 #include "util.h"
 #include <assert.h>
@@ -49,6 +50,10 @@ typedef struct {
 	int status;
 	int content_length;
 	int options;
+
+	//stores timestamp in If-Modified-Since header or 0 if header not present
+	time_t if_modified_since;
+
 	//client encoding preferences
 	encoding_prefs_t encoding_prefs;
 } http_request_t;
@@ -68,6 +73,7 @@ static void init_request(http_request_t *request) {
 	request->status = -1;
 	request->options = 0;
 	request->content_length = -1;
+	request->if_modified_since = (time_t)0;
 	//Note: google does not remember accepted encodings across requests
 	//probably safe to do so
 	init_encoding_prefs(&request->encoding_prefs);
@@ -102,6 +108,9 @@ static void print_request(const http_request_t *request) {
 		request->encoding_prefs.gzip,
 		request->encoding_prefs.identity,
 		request->encoding_prefs.catch_all);
+	char buf[32];
+	time2str(&(request->if_modified_since), buf, 32);
+	printf("If-Modified-Since: %s\n", buf);
 }
 //sends full contents of buffer returns -1 on failure 0 on success
 static int send_all(int fd, const char *buf, size_t len) {
@@ -329,6 +338,7 @@ static int handle_header(http_request_t *request, const char *name, char *value)
 	//Connection
 	//Content-Encoding - what algorithm the message body is compressed with
 	//Content-Length
+	//If-Modified-Since
 	//Range - part of document client wants
 	//Transfer-Encoding
 	//
@@ -369,6 +379,14 @@ static int handle_header(http_request_t *request, const char *name, char *value)
 				//TODO: check for gzip
 			}
 		break;
+		case 'I':
+		case 'i':
+			if(!strcasecmp(name + 1, "f-modified-since")) {
+				//handle If-Modified-Since:
+				if(str2time(value, &(request->if_modified_since)) == -1) {
+					request->if_modified_since = (time_t)0;
+				}
+			}
 		case 'R':
 		case 'r':
 			if(!strcasecmp(name + 1, "ange")) {
@@ -505,10 +523,16 @@ void handle_http_connection(int fd) {
 		}
 
 		//format Last-Modified timestamp
-		struct tm gmt_mtime;
-		assert(gmtime_r(&mtime, &gmt_mtime));
 		char time_stamp_buf[32];
-		assert(strftime(time_stamp_buf, 31, "%a, %d %b %Y %T GMT", &gmt_mtime));
+		time2str(&mtime, time_stamp_buf, 32);
+
+		//check if file has been modified
+		printf("lm: %lu ifs: %lu\n", (unsigned long)mtime, (unsigned long)request.if_modified_since);
+		if(mtime <= request.if_modified_since) {
+			request.status = 304;
+		} else {
+			request.status = 200;
+		}
 
 		//send headers
 		char *buf = con.recv_buf;
@@ -516,7 +540,8 @@ void handle_http_connection(int fd) {
 		//TODO: set TCP_CORK option before sending header (to minimize number of packets send)
 		r = snprintf(buf, BUF_SIZE - 1,
 			"HTTP/1.1 %d %s\r\nContent-Length: %lu\r\nLast-Modified: %s\r\n\r\n",
-			200, reason_phrase(200), (unsigned long)length, time_stamp_buf);
+			request.status, reason_phrase(request.status),
+			(unsigned long)length, time_stamp_buf);
 		assert(r > 0);
 
 		if(send_all(con.fd, buf, (size_t)r) < 0) {
@@ -524,8 +549,8 @@ void handle_http_connection(int fd) {
 			break;
 		}
 
-		//HEAD -> only send headers (no body)
-		if(request.method == HEAD) {
+		//don't send body for HEAD requests of for unmodified files
+		if(request.method == HEAD || request.status == 304) {
 			goto request_end;
 		}
 
