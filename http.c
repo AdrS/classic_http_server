@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include <stdio.h>
+#include <time.h>
 
 #include <sys/sendfile.h>
 #include <sys/stat.h>
@@ -455,6 +456,7 @@ void handle_http_connection(int fd) {
 	init_connection(&con, fd);
 	int r;
 	int length;
+	time_t mtime;
 
 	do {
 		init_request(&request);
@@ -494,24 +496,34 @@ void handle_http_connection(int fd) {
 			goto request_end;
 		}
 
-		fd = web_open(request.path, &length);
+		//find file, content length, mtime
+		fd = web_open(request.path, &length, &mtime);
 		if(fd == -1) {
 			request.status = 404;
 			reply_with_error(&con, request.status);
 			goto request_end;
 		}
 
+		//format Last-Modified timestamp
+		struct tm gmt_mtime;
+		assert(gmtime_r(&mtime, &gmt_mtime));
+		char time_stamp_buf[32];
+		assert(strftime(time_stamp_buf, 31, "%a, %d %b %Y %T GMT", &gmt_mtime));
+
 		//send headers
 		char *buf = con.recv_buf;
+
 		//TODO: set TCP_CORK option before sending header (to minimize number of packets send)
-		r = snprintf(buf, BUF_SIZE - 1, "HTTP/1.1 %d %s\r\nContent-Length: %lu\r\n\r\n",
-			200, reason_phrase(200), (unsigned long)length);
+		r = snprintf(buf, BUF_SIZE - 1,
+			"HTTP/1.1 %d %s\r\nContent-Length: %lu\r\nLast-Modified: %s\r\n\r\n",
+			200, reason_phrase(200), (unsigned long)length, time_stamp_buf);
 		assert(r > 0);
 
 		if(send_all(con.fd, buf, (size_t)r) < 0) {
 			//could not send header :(
 			break;
 		}
+
 		//HEAD -> only send headers (no body)
 		if(request.method == HEAD) {
 			goto request_end;

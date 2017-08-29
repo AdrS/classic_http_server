@@ -75,7 +75,7 @@ void init_record_elts(record_elts_t *re) {
 int empty_handler(char *elt, void *arg) {
 	assert(elt);
 	record_elts_t *memo = (record_elts_t*)arg;
-	if(memo->num_elts > 10) {
+	if(memo->num_elts >= 10) {
 		return -1;
 	}
 	memo->elts[memo->num_elts++] = elt;

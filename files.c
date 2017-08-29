@@ -5,9 +5,10 @@
 #include <unistd.h>
 #include <fcntl.h>
 
-int web_open(const char *path, int *length) {
+int web_open(const char *path, int *length, time_t *mtime) {
 	assert(path);
 	assert(length);
+	assert(mtime);
 
 	struct stat sb;
 	int fd = open(path, O_RDONLY);
@@ -44,5 +45,6 @@ int web_open(const char *path, int *length) {
 	}
 
 	*length = (int)sb.st_size;
+	*mtime = sb.st_mtime;
 	return fd;
 }
