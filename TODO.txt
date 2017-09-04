@@ -1,0 +1,18 @@
+add timeouts to reads
+add parsing of range header
+add range request support
+
+write transfer encoding header parsing + tests
+write chunked encoding parsing
+write read body
+int read_body(http_connection_t *con, http_request_t *request,
+			int (*data_handler)(char *data, size_t len))
+
+write send headers
+write send body
+write 
+int send_chunked(http_connection_t *con,
+			int (*next_chunk)(http_request_t *request))
+write handle post
+write gzip
+write range requests
