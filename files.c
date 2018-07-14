@@ -10,6 +10,11 @@ int web_open(const char *path, int *length, time_t *mtime) {
 	assert(length);
 	assert(mtime);
 
+	const char *default_file = "index.html";
+	if(!path[0]) {
+		path = default_file;
+	}
+
 	struct stat sb;
 	int fd = open(path, O_RDONLY);
 	int dirfd;
@@ -28,7 +33,7 @@ int web_open(const char *path, int *length, time_t *mtime) {
 	//if path is directory, see if it contains an index.html file
 	if(S_ISDIR(sb.st_mode)) {
 		dirfd = fd;
-		fd = openat(dirfd, "index.html", O_RDONLY);
+		fd = openat(dirfd, default_file, O_RDONLY);
 		close(dirfd);
 
 		if(fd == -1) return -1;
