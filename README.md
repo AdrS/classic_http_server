@@ -1,4 +1,4 @@
-# classic_http_server
+# httpserver
 A multithreaded HTTP/1.1 file server written in C.
 
 # Usage
